@@ -1,6 +1,3 @@
 aiogram
 requests
 psutil
-5.  Sahifaning pastiga tushing va yashil **"Commit changes"** tugmasini bosing.
-
-Shu bilan `requirements.txt` fayli to'g'rilanadi! Buni bajarganingizdan keyin Render'dagi "Background Worker" qadamiga o'tishingiz mumkin.
