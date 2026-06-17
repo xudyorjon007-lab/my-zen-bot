@@ -2,6 +2,8 @@ import asyncio
 import logging
 import sqlite3
 import random
+import os  # Render uchun qo'shildi
+from aiohttp import web  # Render uchun qo'shildi
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
@@ -518,12 +520,14 @@ async def check_guess_answer(message: Message, state: FSMContext):
         db_update_balance(message.from_user.id, 100)
         db_update_game_stats(message.from_user.id, is_win=True)
         await message.answer(
-            f"🎉 <b>Daxshat! Omadingiz keldi.</b> Men rostdan ham {secret} sonini o'ylagandim. <b>+100 ball!</b>", parse_mode="HTML")
+            f"🎉 <b>Daxshat! Omadingiz keldi.</b> Men rostdan ham {secret} sonini o'ylagandim. <b>+100 ball!</b>",
+            parse_mode="HTML")
     else:
         db_update_balance(message.from_user.id, -30)
         db_update_game_stats(message.from_user.id, is_win=False)
         await message.answer(
-            f"❌ <b>Afsuski topa olmadingiz!</b> Men <b>{secret}</b> sonini o'ylagan edim. Hisobingizdan -30 ball.", parse_mode="HTML")
+            f"❌ <b>Afsuski topa olmadingiz!</b> Men <b>{secret}</b> sonini o'ylagan edim. Hisobingizdan -30 ball.",
+            parse_mode="HTML")
     await state.clear()
 
 
@@ -562,11 +566,13 @@ async def check_anagram_answer(message: Message, state: FSMContext):
     if user_word == correct_word:
         db_update_balance(message.from_user.id, 80)
         db_update_game_stats(message.from_user.id, is_win=True)
-        await message.answer(f"🎉 <b>Barakalla!</b> Yashirin so'z to'g'ri topildi. Sizga <b>+80 ball</b> berildi!", parse_mode="HTML")
+        await message.answer(f"🎉 <b>Barakalla!</b> Yashirin so'z to'g'ri topildi. Sizga <b>+80 ball</b> berildi!",
+                             parse_mode="HTML")
     else:
         db_update_game_stats(message.from_user.id, is_win=False)
         await message.answer(
-            f"❌ Noto'g'ri. Bu yashirin so'z aslida <b>{correct_word}</b> edi. Keyingi o'yinlarda omad tilaymiz!", parse_mode="HTML")
+            f"❌ Noto'g'ri. Bu yashirin so'z aslida <b>{correct_word}</b> edi. Keyingi o'yinlarda omad tilaymiz!",
+            parse_mode="HTML")
     await state.clear()
 
 
@@ -704,10 +710,34 @@ async def download_database_file(call: CallbackQuery):
 
 
 # ==================================================================
-# 9. TIZIMNING POLLING ISHGA TUSHURILISHI
+# 9. TIZIMNING PORT OCHISH VA POLLING ISHGA TUSHURILISHI (RENDER UCHUN)
 # ==================================================================
+
+# Render tomonidan taqdim etiladigan port
+PORT = int(os.environ.get("PORT", 8080))
+
+
+async def handle(request):
+    return web.Response(text="Bot ishlamoqda!")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f"Server {PORT} portida ishga tushdi!")
+
+
 async def main():
     init_db()
+
+    # 1. Veb-serverni ishga tushirish (Render portni ko'rishi uchun)
+    await start_web_server()
+
+    # 2. Botni boshlash
     print("[LOG] Bot muvaffaqiyatli start oldi...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
