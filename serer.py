@@ -17,7 +17,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ==================================================================
 # 1. GLOBAL SOZLAMALAR VA KONFIGURATSIYA
 # ==================================================================
-BOT_TOKEN = "8635585153:AAEFwTbhc2bi_HJQNSBLyTGBtwNcR8cbkMc"
+BOT_TOKEN = "8635585153:AAHxA5P0srb93vTVyProzCHXg1Nb21awSY0"
 ADMIN_ID = 7578712290
 
 REQUIRED_CHANNEL = -1002389525073
@@ -720,7 +720,10 @@ async def handle(request):
     return web.Response(text="Bot ishlamoqda!")
 
 
-async def start_web_server():
+async def main():
+    init_db()
+
+    # Veb-serverni runner o'zgaruvchisiga olamiz (yopish oson bo'lishi uchun)
     app = web.Application()
     app.router.add_get('/', handle)
     runner = web.AppRunner(app)
@@ -729,14 +732,16 @@ async def start_web_server():
     await site.start()
     print(f"Server {PORT} portida ishga tushdi!")
 
-
-async def main():
-    init_db()
-    await start_web_server()
-
     print("[LOG] Bot muvaffaqiyatli start oldi...")
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+    finally:
+        # Bot o'chganda yoki restart bo'lganda sessiyalarni toza yopish (Xatoliklarni oldini oladi)
+        await bot.session.close()
+        await runner.cleanup()
+        print("[LOG] Barcha tarmoq sessiyalari va portlar xavfsiz yopildi.")
 
 
 if __name__ == "__main__":
