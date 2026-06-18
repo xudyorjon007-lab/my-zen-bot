@@ -196,7 +196,7 @@ async def is_user_subscribed(user_id: int) -> bool:
 def get_subscription_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="📢 Kanalga obuna bo'lish", url=CHANNEL_INVITE_LINK)
-    builder.button(text="✅ Obunani tekshirish", callback_query_data="check_sub_status")
+    builder.button(text="✅ Obunani tekshirish", callback_data="check_sub_status")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -217,26 +217,29 @@ def get_main_reply_keyboard(user_id):
     return builder.as_markup(resize_keyboard=True)
 
 
+# JAVOB BERMAYOTGAN VA XATO CHIQARAYOTGAN QISM MANA SHU YERDA TUZATILDI:
 def get_games_inline_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="🧮 Matematika O'yini", callback_query_data="play_math_game")
-    builder.button(text="🔢 Yashirin Son O'yini", callback_query_data="play_guess_game")
-    builder.button(text="🔤 Harflardan So'z O'yini", callback_query_data="play_anagram_game")
-    builder.button(text="🎫 Omadli Chipta (Tavakkal)", callback_query_data="play_ticket_game")
+    builder.button(text="🧮 Matematika O'yini", callback_data="play_math_game")
+    builder.button(text="🔢 Yashirin Son O'yini", callback_data="play_guess_game")
+    builder.button(text="🔤 Harflardan So'z O'yini", callback_data="play_anagram_game")
+    builder.button(text="🎫 Omadli Chipta (Tavakkal)", callback_data="play_ticket_game")
     builder.adjust(1)
     return builder.as_markup()
 
 
 def get_admin_inline_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Barcha xabar tarqatish", callback_query_data="adm_broadcast")
-    builder.button(text="💰 Balansni tahrirlash", callback_query_data="adm_edit_balance")
-    builder.button(text="💾 Bazani yuklab olish", callback_query_data="adm_download_db")
+    builder.button(text="📢 Barcha xabar tarqatish", callback_data="adm_broadcast")
+    builder.button(text="💰 Balansni tahrirlash", callback_data="adm_edit_balance")
+    builder.button(text="💾 Bazani yuklab olish", callback_data="adm_download_db")
     builder.adjust(1)
     return builder.as_markup()
 
 
 async def is_subscribed_checker(message: Message) -> bool:
+    if message.from_user.id == ADMIN_ID:
+        return True
     if not await is_user_subscribed(message.from_user.id):
         await message.answer("⚠️ Botdan foydalanish uchun avval kanalga a'zo bo'ling:",
                              reply_markup=get_subscription_keyboard())
@@ -262,7 +265,7 @@ async def cmd_start(message: Message):
 
     db_add_user(user_id, username, full_name, referrer_id)
 
-    if not await is_user_subscribed(user_id):
+    if user_id != ADMIN_ID and not await is_user_subscribed(user_id):
         await message.answer(
             f"👋 <b>Assalomu alaykum, {full_name}!</b>\n\n"
             f"Botning barcha funksiyalaridan to'liq foydalanish va o'yinlarni boshlash uchun "
@@ -291,7 +294,7 @@ async def cmd_start(message: Message):
 @dp.callback_query(F.data == "check_sub_status")
 async def callback_check_sub(call: CallbackQuery):
     user_id = call.from_user.id
-    if await is_user_subscribed(user_id):
+    if user_id == ADMIN_ID or await is_user_subscribed(user_id):
         try:
             await call.message.delete()
         except Exception:
@@ -495,7 +498,6 @@ async def start_guess_game(call: CallbackQuery, state: FSMContext):
     secret_num = random.randint(1, 10)
     await state.update_data(secret_number=secret_num)
 
-    # TUZATILDI: parse_mode="HTML" qo'shildi
     await call.message.edit_text(
         "<b>🔢 Yashirin Son o'yini:</b>\n\n"
         "Men 1 dan 10 gacha bo'lgan butun son o'yladim. Uni topishga harakat qiling.\n"
@@ -546,7 +548,6 @@ async def start_anagram_game(call: CallbackQuery, state: FSMContext):
     target = random.choice(ANAGRAMS)
     await state.update_data(correct_word=target["original"])
 
-    # TUZATILDI: parse_mode="HTML" qo'shildi
     await call.message.edit_text(
         f"<b>🔤 Harflardan so'z yasash o'yini:</b>\n\n"
         f"Berilgan aralash harflardan to'g'ri so'zni tiklang: <b>{target['scrambled']}</b>\n\n"
@@ -712,8 +713,6 @@ async def download_database_file(call: CallbackQuery):
 # ==================================================================
 # 9. TIZIMNING PORT OCHISH VA POLLING ISHGA TUSHURILISHI (RENDER UCHUN)
 # ==================================================================
-
-# Render tomonidan taqdim etiladigan port
 PORT = int(os.environ.get("PORT", 8080))
 
 
@@ -733,11 +732,8 @@ async def start_web_server():
 
 async def main():
     init_db()
-
-    # 1. Veb-serverni ishga tushirish (Render portni ko'rishi uchun)
     await start_web_server()
 
-    # 2. Botni boshlash
     print("[LOG] Bot muvaffaqiyatli start oldi...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
