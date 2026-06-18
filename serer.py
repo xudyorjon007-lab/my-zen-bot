@@ -20,8 +20,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 BOT_TOKEN = "8635585153:AAHxA5P0srb93vTVyProzCHXg1Nb21awSY0"
 ADMIN_ID = 7578712290
 
-REQUIRED_CHANNEL = -1002389525073
-CHANNEL_INVITE_LINK = "https://t.me/musicsvlog"
+REQUIRED_CHANNEL = -1002389525073  # <-- Bu yerga O'ZINGIZNING kanalingiz ID raqamini yozing
+CHANNEL_INVITE_LINK = "https://t.me/musicsvlog"  # <-- Bu yerga O'ZINGIZNING kanalingiz silkasini qo'ying
+
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -195,11 +196,11 @@ async def is_user_subscribed(user_id: int) -> bool:
 
 def get_subscription_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Kanalga obuna bo'lish", url=CHANNEL_INVITE_LINK)
+    # url va callback_data parametrlari aniq ko'rsatilishi shart!
+    builder.button(text="📢 Kanalga obuna bo'lish", url="https://t.me/musicsvlog")
     builder.button(text="✅ Obunani tekshirish", callback_data="check_sub_status")
     builder.adjust(1)
     return builder.as_markup()
-
 
 def get_main_reply_keyboard(user_id):
     builder = ReplyKeyboardBuilder()
