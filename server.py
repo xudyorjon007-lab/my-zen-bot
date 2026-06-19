@@ -1,7 +1,9 @@
+import os
 import logging
 import asyncio
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
+from aiohttp import web  # Port xatoligini tuzatish uchun veb-server kutubxonasi
 
 # === SOZLAMALAR ===
 BOT_TOKEN = '8606542982:AAEJI8S8CN5IDkqet1XCEZDZkPIPfIIHm3c'
@@ -93,7 +95,6 @@ async def handle_suspicious_file(message: types.Message):
         stats, status = await scan_file_via_virustotal(download_path)
 
         # Vaqtinchalik yuklangan faylni o'chirish (xavfsizlik va xotira uchun)
-        import os
         if os.path.exists(download_path):
             os.remove(download_path)
 
@@ -138,9 +139,32 @@ async def echo_start(message: types.Message):
 # BOTNI ISHGA TUSHIRISH
 # ==========================================
 async def main():
+    # --- PORT Skanerini aldash uchun soxta Web sahifa mexanizmi ---
+    async def dummy_web_handler(request):
+        return web.Response(text="Cyber Guard Bot is running perfectly!")
+
+    app = web.Application()
+    app.router.add_get("/", dummy_web_handler)
+    
+    # Hosting ochgan portni o'qib olamiz (Render/Railway uchun shart)
+    port = int(os.environ.get("PORT", 8000))
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    
+    # Portni fonda ochiq holatda ushlab turamiz
+    asyncio.create_task(site.start())
+    logging.info(f"Dummy server successfully started on port {port}")
+    # -------------------------------------------------------------
+
+    # Botning polling jarayonini ishga tushirish
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped.")
