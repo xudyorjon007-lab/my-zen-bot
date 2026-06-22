@@ -5,6 +5,9 @@ import threading
 import http.server
 import socketserver
 import os
+import random
+from datetime import datetime
+import aiosqlite  # Asinxron ishlash va barqarorlik uchun yangi baza drayveri
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, \
@@ -14,157 +17,152 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
 BOT_TOKEN = "8904307795:AAGipj9PJzimAu8bzxypDTLqiYaqHAsiXHI"
 ADMIN_ID = 7578712290  # O'zingizning Telegram ID-ingiz
 PREMIUM_PRICE = 80000  # Premium status narxi (so'mda)
-KARTA_RAQAM = "5440 8103 1635 5816"  # Bu yerga o'zingizning karta raqamingizni yozing!
-KARTA_EGA_SMI = "Nishanova Umida."  # Bu yerga kartangiz egasining ismini yozing!
+KARTA_RAQAM = "5440 8103 1635 5816"  # Karta raqamingiz
+KARTA_EGA_SMI = "Nishanova Umida."  # Karta egasining ismi
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-
-# --- MA'LUMOTLAR BAZASI (SQLITE) ---
-def init_db():
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            full_name TEXT,
-            balance REAL DEFAULT 0.0,
-            referred_by INTEGER DEFAULT NULL,
-            is_premium INTEGER DEFAULT 0,
-            click_count INTEGER DEFAULT 0
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS promocodes (
-            code TEXT PRIMARY KEY,
-            amount REAL,
-            is_used INTEGER DEFAULT 0
-        )
-    """)
-    conn.commit()
-
-    cursor.execute("PRAGMA table_info(users)")
-    columns = [column[1] for column in cursor.fetchall()]
-    if "is_premium" not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN is_premium INTEGER DEFAULT 0")
-    if "click_count" not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN click_count INTEGER DEFAULT 0")
-    conn.commit()
-    conn.close()
+DB_NAME = "referral_bot.db"
 
 
-def get_user(user_id):
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.close()
-    return user
+# --- ASINXRON MA'LUMOTLAR BAZASI ---
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                full_name TEXT,
+                balance REAL DEFAULT 0.0,
+                referred_by INTEGER DEFAULT NULL,
+                is_premium INTEGER DEFAULT 0,
+                click_count INTEGER DEFAULT 0,
+                last_bonus_date TEXT DEFAULT NULL,
+                last_game_date TEXT DEFAULT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS promocodes (
+                code TEXT PRIMARY KEY,
+                amount REAL,
+                is_used INTEGER DEFAULT 0
+            )
+        """)
+        await db.commit()
+
+        # Eski bazaga yangi kerakli ustunlarni qo'shish (Migratsiya)
+        async with db.execute("PRAGMA table_info(users)") as cursor:
+            columns = [column[1] for column in await cursor.fetchall()]
+        if "is_premium" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN is_premium INTEGER DEFAULT 0")
+        if "click_count" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN click_count INTEGER DEFAULT 0")
+        if "last_bonus_date" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN last_bonus_date TEXT DEFAULT NULL")
+        if "last_game_date" not in columns:
+            await db.execute("ALTER TABLE users ADD COLUMN last_game_date TEXT DEFAULT NULL")
+        await db.commit()
 
 
-def register_user(user_id, full_name, referrer_id=None):
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO users (user_id, full_name, referred_by) VALUES (?, ?, ?)",
-            (user_id, full_name, referrer_id)
-        )
-        conn.commit()
+async def get_user(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+                "SELECT user_id, full_name, balance, referred_by, is_premium, click_count, last_bonus_date, last_game_date FROM users WHERE user_id = ?",
+                (user_id,)) as cursor:
+            return await cursor.fetchone()
 
-        if referrer_id:
-            referrer = get_user(referrer_id)
-            if referrer:
-                bonus = 300 if len(referrer) > 4 and referrer[4] == 1 else 100
-                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (bonus, referrer_id))
-                conn.commit()
-                return bonus
-    except sqlite3.IntegrityError:
-        pass
-    finally:
-        conn.close()
+
+async def register_user(user_id, full_name, referrer_id=None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute(
+                "INSERT INTO users (user_id, full_name, referred_by) VALUES (?, ?, ?)",
+                (user_id, full_name, referrer_id)
+            )
+            await db.commit()
+
+            if referrer_id:
+                referrer = await get_user(referrer_id)
+                if referrer:
+                    bonus = 300 if referrer[4] == 1 else 100
+                    await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (bonus, referrer_id))
+                    await db.commit()
+                    return bonus
+        except sqlite3.IntegrityError:
+            pass
     return 0
 
 
-def set_premium(user_id, status=1):
-    """Foydalanuvchiga premium berish (status=1) yoki olib qo'yish (status=0)"""
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_premium = ? WHERE user_id = ?", (status, user_id))
-    conn.commit()
-    conn.close()
+async def set_premium(user_id, status=1):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET is_premium = ? WHERE user_id = ?", (status, user_id))
+        await db.commit()
 
 
-def get_premium_users():
-    """Barcha premium foydalanuvchilarni bazadan olish"""
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, full_name FROM users WHERE is_premium = 1")
-    users = cursor.fetchall()
-    conn.close()
-    return users
+async def get_premium_users():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, full_name FROM users WHERE is_premium = 1") as cursor:
+            return await cursor.fetchall()
 
 
-def add_promocode(code, amount):
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO promocodes (code, amount) VALUES (?, ?)", (code.upper(), amount))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False
+async def add_promocode(code, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute("INSERT INTO promocodes (code, amount) VALUES (?, ?)", (code.upper(), amount))
+            await db.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
 
-def use_promocode_db(user_id, code):
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM promocodes WHERE code = ? AND is_used = 0", (code.upper(),))
-    promo = cursor.fetchone()
-
-    if promo:
-        amount = promo[1]
-        cursor.execute("UPDATE promocodes SET is_used = 1 WHERE code = ?", (code.upper(),))
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
-        conn.close()
-        return amount
-    conn.close()
+async def use_promocode_db(user_id, code):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT code, amount, is_used FROM promocodes WHERE code = ? AND is_used = 0",
+                              (code.upper(),)) as cursor:
+            promo = await cursor.fetchone()
+        if promo:
+            amount = promo[1]
+            await db.execute("UPDATE promocodes SET is_used = 1 WHERE code = ?", (code.upper(),))
+            await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            await db.commit()
+            return amount
     return None
 
 
-def increment_click(user_id):
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET click_count = click_count + 1 WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+async def increment_click(user_id):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET click_count = click_count + 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
 
 
-def get_all_users_stats():
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM users WHERE is_premium = 1")
-    premium = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM users WHERE is_premium = 0")
-    normal = cursor.fetchone()[0]
-    conn.close()
-    return total, premium, normal
+async def update_user_date(user_id, field, date_str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(f"UPDATE users SET {field} = ? WHERE user_id = ?", (date_str, user_id))
+        await db.commit()
 
 
-def get_all_user_ids():
-    conn = sqlite3.connect("referral_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    ids = [row[0] for row in cursor.fetchall()]
-    conn.close()
-    return ids
+async def update_balance(user_id, amount):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+
+
+async def get_all_users_stats():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as c1:
+            total = (await c1.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_premium = 1") as c2:
+            premium = (await c2.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE is_premium = 0") as c3:
+            normal = (await c3.fetchone())[0]
+        return total, premium, normal
+
+
+async def get_all_user_ids():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id FROM users") as cursor:
+            return [row[0] for row in await cursor.fetchall()]
 
 
 # --- KLAVIATURALAR ---
@@ -180,10 +178,16 @@ def main_keyboard():
 
 
 def admin_keyboard():
-    """Faqat admin ko'ra oladigan inline menyu"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔴 Premium maqomni qaytarib olish", callback_data="admin_revoke_premium")],
         [InlineKeyboardButton(text="📊 Umumiy Statistika", callback_data="admin_stats")]
+    ])
+
+
+def premium_menu_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Kunlik Premium Bonus", callback_data="prem_daily_bonus")],
+        [InlineKeyboardButton(text="🍀 Omadli Chipta (Mini-O'yin)", callback_data="prem_lucky_game")]
     ])
 
 
@@ -202,10 +206,10 @@ async def cmd_start(message: Message):
         if referrer_id == user_id:
             referrer_id = None
 
-    user_exists = get_user(user_id)
+    user_exists = await get_user(user_id)
 
     if not user_exists:
-        bonus_given = register_user(user_id, full_name, referrer_id)
+        bonus_given = await register_user(user_id, full_name, referrer_id)
         if bonus_given > 0 and referrer_id:
             try:
                 await bot.send_message(
@@ -222,7 +226,6 @@ async def cmd_start(message: Message):
                              reply_markup=main_keyboard())
 
 
-# --- ADMIN PANEL BUYRUG'I ---
 @dp.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -232,20 +235,18 @@ async def cmd_admin(message: Message):
                          reply_markup=admin_keyboard())
 
 
-# --- PREMIUM O'CHIRISH FUNKSIYASI ---
 @dp.callback_query(F.data == "admin_revoke_premium")
 async def admin_revoke_list(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
         await call.answer("Ruxsat yo'q!", show_alert=True)
         return
 
-    premium_users = get_premium_users()
+    premium_users = await get_premium_users()
     if not premium_users:
         await call.message.answer("ℹ️ Botda hozircha hech qanday Premium foydalanuvchi yo'q.")
         await call.answer()
         return
 
-    # Har bir foydalanuvchi uchun tugma yaratamiz
     buttons = []
     for u_id, name in premium_users:
         buttons.append([InlineKeyboardButton(text=f"❌ {name} (ID: {u_id})", callback_data=f"remove_prem_{u_id}")])
@@ -263,13 +264,12 @@ async def process_remove_premium(call: CallbackQuery):
         return
 
     target_id = int(call.data.split("_")[2])
-    user_info = get_user(target_id)
+    user_info = await get_user(target_id)
 
     if user_info:
         name = user_info[1]
-        set_premium(target_id, status=0)  # Premium maqomini 0 (oddiy) qilamiz
+        await set_premium(target_id, status=0)
 
-        # Foydalanuvchining o'ziga xabar yuborish
         try:
             await bot.send_message(
                 chat_id=target_id,
@@ -288,7 +288,7 @@ async def process_remove_premium(call: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_stats")
 async def admin_show_stats(call: CallbackQuery):
-    total, premium, normal = get_all_users_stats()
+    total, premium, normal = await get_all_users_stats()
     await call.message.answer(
         f"📊 **Batafsil Statistika:**\n\n"
         f"👥 Hamma foydalanuvchilar: {total} ta\n"
@@ -300,13 +300,13 @@ async def admin_show_stats(call: CallbackQuery):
 
 @dp.message(F.text == "💰 Mening balansim")
 async def check_balance(message: Message):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     if not user:
         return
 
     balance = user[2]
-    is_premium = user[4] if len(user) > 4 else 0
-    clicks = user[5] if len(user) > 5 else 0
+    is_premium = user[4]
+    clicks = user[5]
 
     if is_premium == 0 and clicks >= 3:
         await message.answer(
@@ -317,26 +317,34 @@ async def check_balance(message: Message):
         return
 
     if is_premium == 0:
-        increment_click(message.from_user.id)
+        await increment_click(message.from_user.id)
 
-    status_text = "💎 Premium" if is_premium == 1 else "⚪ Oddiy Foydalanuvchi"
+    if is_premium == 1:
+        status_text = "💎 Premium (1 oy)"
+        premium_note = "\n🌟 _Siz 1oy a'zosiz! Quyidagi Premium funksiyalardan foydalanishingiz mumkin:_"
+        markup = premium_menu_keyboard()
+    else:
+        status_text = f"⚪ Oddiy Foydalanuvchi ({clicks}/3)"
+        premium_note = ""
+        markup = None
 
     await message.answer(
         f"👤 **Sizning maqomingiz:** {status_text}\n"
         f"💵 **Sizning balansingiz:** {balance} so'm\n\n"
         f"💡 Pul chiqarish minimal miqdori: 50,000 so'm.\n"
-        f"Pulni yechish uchun adminga yozing: t.me/murod_9992"
+        f"Pulni yechish uchun adminga yozing: t.me/murod_9992{premium_note}",
+        reply_markup=markup
     )
 
 
 @dp.message(F.text == "🔗 Taklifnoma (Link)")
 async def get_link(message: Message):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
 
-    is_premium = user[4] if user and len(user) > 4 else 0
-    reward = "300 so'm (Premium bonus! 🔥)" if is_premium == 1 else "100 so'm"
+    is_premium = user[4] if user else 0
+    reward = "500 so'm (Premium bonus! 🔥)" if is_premium == 1 else "200 so'm"
 
     await message.answer(
         f"🤝 **Sizning shaxsiy taklifnoma havolangiz:**\n\n`{ref_link}`\n\n"
@@ -346,11 +354,11 @@ async def get_link(message: Message):
 
 @dp.message(F.text == "💎 Premium Xizmatlar")
 async def premium_features(message: Message):
-    user = get_user(message.from_user.id)
+    user = await get_user(message.from_user.id)
     if not user:
         return
 
-    is_premium = user[4] if len(user) > 4 else 0
+    is_premium = user[4]
 
     if is_premium == 0:
         pay_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -362,7 +370,8 @@ async def premium_features(message: Message):
             f"🌟 **💎 PREMIUM REJIM AFZALLIKLARI:**\n\n"
             f"1️⃣ Takliflar uchun **3 baravar ko'p (300 so'm)** olasiz!\n"
             f"2️⃣ Botdagi barcha kunlik cheklovlar butunlay olib tashlanadi.\n"
-            f"3️⃣ Eksklyuziv pullik kinolar va IT darsliklar kanaliga kirish.\n\n"
+            f"3️⃣ Eksklyuziv pullik kinolar va IT darsliklar kanaliga kirish.\n"
+            f"4️⃣ Kunlik VIP bonuslar va tasodifiy yutuqli o'yinlar!\n\n"
             f"💰 **Premium narxi:** {PREMIUM_PRICE} so'm.\n\n"
             f"Sotib olish uchun quyidagi tugmalardan foydalaning:",
             reply_markup=pay_keyboard
@@ -372,8 +381,62 @@ async def premium_features(message: Message):
             "👑 **PREMIUM KLUBSA XUSH KELIBSIZ!**\n\n"
             "🎬 **1. Maxsus Pullik Kinolar:** t.me/Yopiq_Kino_Kanalimiz_Link\n"
             "📚 **2. Pullik IT Darsliklar:** t.me/Yopiq_Kurs_Kanalimiz_Link\n"
-            "🤖 **3. VIP Aloqa xonasi ochildi.**"
+            "🤖 **3. VIP Aloqa xonasi ochildi.**\n\n"
+            "💡 _Kunlik bonus va chipta o'yinlarini o'ynash uchun **'💰 Mening balansim'** bo'limiga o'ting!_"
         )
+
+
+# --- PREMIUM INTERAKTIV FUNKSIYALARI ---
+@dp.callback_query(F.data == "prem_daily_bonus")
+async def process_daily_bonus(call: CallbackQuery):
+    user = await get_user(call.from_user.id)
+    if not user or user[4] != 1:
+        await call.answer("❌ Bu funksiya faqat Premium a'zolar uchun!", show_alert=True)
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if user[6] == today_str:
+        await call.answer("❌ Siz bugungi kunlik bonusni olib bo'lgansiz! Ertaga qayta urinib ko'ring.", show_alert=True)
+        return
+
+    bonus_amount = random.randint(300, 500)
+    await update_balance(call.from_user.id, bonus_amount)
+    await update_user_date(call.from_user.id, "last_bonus_date", today_str)
+
+    await call.message.answer(
+        f"🎁 **Premium Bonus!** Balansingizga muvaffaqiyatli **{bonus_amount} so'm** hadya qilindi! 💸")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "prem_lucky_game")
+async def process_lucky_game(call: CallbackQuery):
+    user = await get_user(call.from_user.id)
+    if not user or user[4] != 1:
+        await call.answer("❌ Bu funksiya faqat Premium a'zolar uchun!", show_alert=True)
+        return
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if user[7] == today_str:
+        await call.answer("❌ Siz bugun chipta o'yinini o'ynagansiz! Imkoniyat har kuni 1 marta beriladi.",
+                          show_alert=True)
+        return
+
+    await update_user_date(call.from_user.id, "last_game_date", today_str)
+
+    # O'yin natijasi tasodifiy generator
+    outcomes = [
+        {"win": True, "amount": 350, "text": "🍀 Omad! Kichik chiptadan 500 so'm yutdingiz!"},
+        {"win": True, "amount": 500, "text": "🔥 Katta Omad! Chiptangizdan 1,500 so'm yutuq chiqdi!"},
+        {"win": False, "amount": 0,
+         "text": "😔 Afsus, bu safar chiptangiz bo'sh chiqdi. Ertaga albatta omadingiz keladi!"}
+    ]
+
+    result = random.choice(outcomes)
+    if result["win"]:
+        await update_balance(call.from_user.id, result["amount"])
+
+    await call.message.answer(f"🎫 **Omadli Chipta natijasi:**\n\n{result['text']}")
+    await call.answer()
 
 
 @dp.callback_query(F.data == "get_card")
@@ -398,9 +461,9 @@ async def callback_send_check(call: CallbackQuery):
 @dp.message(F.photo)
 async def handle_receipt(message: Message):
     user_id = message.from_user.id
-    user = get_user(user_id)
+    user = await get_user(user_id)
 
-    if user and len(user) > 4 and user[4] == 1:
+    if user and user[4] == 1:
         await message.answer("Siz allaqachon Premiumsiz!")
         return
 
@@ -421,7 +484,7 @@ async def handle_receipt(message: Message):
 @dp.callback_query(F.data.startswith("accept_"))
 async def admin_accept_pay(call: CallbackQuery):
     target_user_id = int(call.data.split("_")[1])
-    set_premium(target_user_id, status=1)
+    await set_premium(target_user_id, status=1)
 
     try:
         await bot.send_message(
@@ -464,7 +527,7 @@ async def check_promocode_handler(message: Message):
                      "📊 Statistika"]:
         return
 
-    amount = use_promocode_db(user_id, code_text)
+    amount = await use_promocode_db(user_id, code_text)
     if amount:
         await message.answer(
             f"🎉 **Ajoyib!** Promokod muvaffaqiyatli ishlatildi. Balansingizga **{amount} so'm** qo'shildi! 💸")
@@ -489,7 +552,7 @@ async def create_promocode(message: Message):
         await message.answer("Summa faqat raqamlarda bo'lishi kerak!")
         return
 
-    success = add_promocode(code_name, amount)
+    success = await add_promocode(code_name, amount)
     if success:
         await message.answer(f"✅ Yangi promokod yaratildi:\n🔑 Kod: `{code_name}`\n💰 Qiymati: {amount} so'm")
     else:
@@ -499,7 +562,7 @@ async def create_promocode(message: Message):
 @dp.message(F.text == "📊 Statistika")
 async def show_stats(message: Message):
     try:
-        total, premium, normal = get_all_users_stats()
+        total, premium, normal = await get_all_users_stats()
         await message.answer(
             f"📊 **BOTNING REAL VAQTDAGI STATISTIKASI**\n\n"
             f"👥 **Umumiy foydalanuvchilar:** {total} ta\n"
@@ -522,9 +585,9 @@ async def send_global_ad(message: Message):
         await message.answer("Xato! Foydalanish: `/reklama Reklama matni`")
         return
 
-    await message.answer("📢 Reklama barcha foydalanuvchilarga tarqatilmoqda...")
+    await message.answer("📢 Reklama barcha foydalanuvciamga tarqatilmoqda...")
 
-    user_ids = get_all_user_ids()
+    user_ids = await get_all_user_ids()
     success = 0
 
     for u_id in user_ids:
@@ -548,6 +611,7 @@ def run_dummy_server():
             self.wfile.write(b"Bot muvaffaqiyatli ishlamoqda!")
 
     port = int(os.environ.get("PORT", 10000))
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), DummyHandler) as httpd:
         print(f"Render uchun soxta server {port}-portda ishga tushdi.")
         httpd.serve_forever()
@@ -555,7 +619,7 @@ def run_dummy_server():
 
 # --- BOTNI ISHGA TUSHIRISH ---
 async def main():
-    init_db()
+    await init_db()
     print("🚀 Bot muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot)
 
