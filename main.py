@@ -2,7 +2,10 @@ import asyncio
 import logging
 import sqlite3
 import time
+import os
+import threading
 from datetime import datetime
+from flask import Flask
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -11,28 +14,50 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # 1. BOT SOZLAMALARI
-TOKEN = "8678598204:AAGw4udEPYAQpQV3bvR2DGgremjgFY5efr4"  # Bot tokenini kiriting
-ADMIN_ID = 7578712290  # O'zingizning Telegram ID'ingizni kiriting
+TOKEN = "8678598204:AAGw4udEPYAQpQV3bvR2DGgremjgFY5efr4"  # Bot tokeni
+ADMIN_ID = 7578712290  # Telegram ID'ingiz
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+# SOXTA FLASK SERVER (Render "no open ports" xatoligini bermasligi va o'chib qolmasligi uchun)
+flask_app = Flask(__name__)
+
+
+@flask_app.route('/')
+def home():
+    return "Bot is active and running 24/7!"
+
+
+def run_flask():
+    # Render avtomatik taqdim etadigan PORT o'zgaruvchisini oladi, bo'lmasa 10000 da ishlaydi
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
 
 
 # 2. MA'LUMOTLAR BAZASI TIZIMI
 def init_db():
     conn = sqlite3.connect("quiz_bot.db")
     cursor = conn.cursor()
-    # Foydalanuvchilar jadvaliga oxirgi topshirgan sanasini qo'shamiz
+
+    # Foydalanuvchilar jadvali
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             full_name TEXT,
-            total_score INTEGER DEFAULT 0,
-            last_passed_date TEXT DEFAULT ""
+            total_score INTEGER DEFAULT 0
         )
     """)
+
+    # AGAR ESKI BAZA BO'LSA: last_passed_date ustuni yo'qligi sababli xato bermasligi uchun avtomatik qo'shish
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN last_passed_date TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        # Ustun allaqachon mavjud bo'lsa xatoni e'tiborsiz qoldiradi
+        pass
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +71,6 @@ def init_db():
 
     cursor.execute("SELECT COUNT(*) FROM questions")
     if cursor.fetchone()[0] == 0:
-        # Bu yerga bazangizda qancha ko'p savol bo'lsa, har kungi testlar shunchalik bir-biriga o'xshamaydi
         default_questions = [
             ("IP manzillar nechanchi qatlamda ishlaydi?", "Layer 1", "Layer 2", "Layer 3", "Layer 4", 2,
              "IP manzillar OSI modelining Tarmoq (Network) qatlamida ishlaydi."),
@@ -131,8 +155,8 @@ def check_user_passed_today(user_id):
 
     today = datetime.now().strftime("%Y-%m-%d")
     if row and row[0] == today:
-        return True  # Bugun topshirib bo'lgan
-    return False  # Bugun hali topshirmagan
+        return True
+    return False
 
 
 def update_user_date(user_id, score):
@@ -197,7 +221,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     current_state = await state.get_state()
 
-    # 1. AGAR HOZIR TEST JARAYONIDA BO'LSA (START BOSSA BUZILMAYDI)
     if current_state == QuizState.answering.state:
         await message.answer(
             "⚠️ **Siz hozir test jarayonidasiz!**\n\n"
@@ -207,7 +230,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         return
 
-    # 2. AGAR BUGUNGI TESTNI TOPSHIRIB BO'LGAN BO'LSA
     if check_user_passed_today(user_id):
         await message.answer(
             "❌ **Siz bugungi test varianti bo'yicha urinishingizdan foydalandingiz!**\n\n"
@@ -215,7 +237,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         return
 
-    # Yangi foydalanuvchini qo'shish
     add_user(user_id, message.from_user.username, message.from_user.full_name)
 
     welcome_text = (
@@ -237,7 +258,6 @@ async def cb_resume_quiz(callback: types.CallbackQuery, state: FSMContext):
 async def cb_start_quiz(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
 
-    # Tugma orqali xavfsizlik tekshiruvi
     if check_user_passed_today(user_id):
         await callback.answer("Bugun test topshirib bo'lgansiz!", show_alert=True)
         await callback.message.edit_text("❌ Bugungi urinish tugagan. Ertaga yangi variant ochiladi.")
@@ -261,7 +281,6 @@ async def cb_start_quiz(callback: types.CallbackQuery, state: FSMContext):
 async def send_next_question(message: types.Message, state: FSMContext, is_resume=False):
     data = await state.get_data()
 
-    # 10 daqiqa (600 soniya) nazorati
     elapsed_time = time.time() - data["start_time"]
     if elapsed_time > 600:
         warning_text = "⏱ **Afsus, 10 daqiqalik vaqtingiz tugadi!** Natijalar qayd etilmoqda..."
@@ -348,13 +367,11 @@ async def cb_next_question(callback: types.CallbackQuery, state: FSMContext):
     await send_next_question(callback.message, state)
 
 
-# FINISH FUNKSIYASI - SANA BILAN MUHRLASH
 async def finish_quiz(message: types.Message, state: FSMContext, timeout=False):
     data = await state.get_data()
     final_score = data["score"]
     user_id = message.chat.id
 
-    # Foydalanuvchiga BUGUNGI sanani yozib qo'yamiz, bugun qayta kira olmaydi
     update_user_date(user_id, final_score)
 
     user_username = message.chat.username
@@ -379,7 +396,6 @@ async def finish_quiz(message: types.Message, state: FSMContext, timeout=False):
     except Exception:
         await message.answer(report, parse_mode="Markdown")
 
-    # ADMINGA MUKAMMAL HISOBOT (ID raqamisiz, faqat link va nik bilan)
     admin_alert = (
         f"🔔 **Kunlik test natijasi keldi!** {'(Taymer tugadi ⏱)' if timeout else ''}\n\n"
         f"👤 **Foydalanuvchi:** {user_fullname}\n"
@@ -399,7 +415,14 @@ async def finish_quiz(message: types.Message, state: FSMContext, timeout=False):
 
 async def main():
     init_db()
+
+    # Render'da "no open ports" xatoligi chiqmasligi uchun Flask portini parallel oqimda ochamiz
+    threading.Thread(target=run_flask, daemon=True).start()
+
     print("🤖 Har kuni yangilanadigan 100% himoyali Quiz Bot ishga tushdi...")
+
+    # Conflict xatosini oldini olish uchun avvalgi kesh so'rovlarini tozalab pollingni boshlaymiz
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 
