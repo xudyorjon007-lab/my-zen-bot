@@ -14,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # 1. BOT SOZLAMALARI
-TOKEN = "8678598204:AAGw4udEPYAQpQV3bvR2DGgremjgFY5efr4"  # Bot tokeni
+TOKEN = "8931216163:AAH2n19Jlcflxa7YCix_sdEAcCIF4GrmU38"  # Bot tokeni
 ADMIN_ID = 7578712290  # Telegram ID'ingiz
 logging.basicConfig(level=logging.INFO)
 
