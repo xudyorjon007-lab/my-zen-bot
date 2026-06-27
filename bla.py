@@ -14,7 +14,7 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKe
     CallbackQuery
 
 # --- SOZLAMALAR ---
-BOT_TOKEN = "8904307795:AAGipj9PJzimAu8bzxypDTLqiYaqHAsiXHI"
+BOT_TOKEN = "8963937319:AAGlLRMZStNrktIJuzZ-fnQ2YytIUTtLVEo:"
 ADMIN_ID = 7578712290  # O'zingizning Telegram ID-ingiz
 PREMIUM_PRICE = 80000  # Premium status narxi (so'mda)
 KARTA_RAQAM = "5440 8103 1635 5816"  # Karta raqamingiz
